@@ -4,9 +4,9 @@ async function seedConfiguredAdmin(){
   if(!env.ADMIN_EMAIL||!env.ADMIN_PASSWORD) return;
   const {User,Company,LeaveType}=await import('./models/index.js');
   if(await User.exists({role:'ADMIN'})) return;
-  if(!await Company.exists()) await Company.create({name:'HCM Lite'});
-  await User.create({email:env.ADMIN_EMAIL,passwordHash:await (await import('bcryptjs')).default.hash(env.ADMIN_PASSWORD,12),role:'ADMIN'});
-  if(!await LeaveType.exists()) await LeaveType.create([{name:'Annual leave',code:'annual',quota:14},{name:'Sick leave',code:'sick',quota:8},{name:'Casual leave',code:'casual',quota:10},{name:'Unpaid leave',code:'unpaid',unpaid:true}]);
+  const company=await Company.findOne()||await Company.create({name:'HCM Lite',tenantMigrationVersion:1});
+  await User.create({email:env.ADMIN_EMAIL,passwordHash:await (await import('bcryptjs')).default.hash(env.ADMIN_PASSWORD,12),role:'ADMIN',company:company.id});
+  if(!await LeaveType.exists({company:company.id})) await LeaveType.create([{name:'Annual leave',code:'annual',quota:14,company:company.id},{name:'Sick leave',code:'sick',quota:8,company:company.id},{name:'Casual leave',code:'casual',quota:10,company:company.id},{name:'Unpaid leave',code:'unpaid',unpaid:true,company:company.id}]);
 }
 if(!process.env.VERCEL){
   await connectDatabase();

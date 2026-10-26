@@ -9,6 +9,7 @@ import { getAdminAnalytics,getHrAnalytics,getEmployeeAnalytics } from './service
 import { chatWithTools,summarizeMetrics,parseSmartLeave,answerPolicyQuestion } from './services/ai.service.js';
 const asyncRoute=fn=>(req,res,next)=>Promise.resolve(fn(req,res,next)).catch(next);
 export const app=express(); app.use(helmet()); app.use(cors({origin:env.FRONTEND_URL,credentials:true})); app.use(express.json({limit:'1mb'})); app.use('/api/auth/login',rateLimit({windowMs:15*60*1000,limit:10}));
+const companySignupLimit=rateLimit({windowMs:60*60*1000,limit:5,standardHeaders:'draft-7',legacyHeaders:false});
 app.use(asyncRoute(async(req,res,next)=>{
   if(req.path==='/api/health') return next();
   try { await connectDatabase(); next(); }
@@ -21,12 +22,31 @@ function workingDateKeys(from,to,company,holidaySet=new Set()){const result=[];f
 app.get('/',(req,res)=>res.json({status:true,database:'connected',message:'MongoDB connected successfully. HCM Lite backend is running.'}));
 app.get('/api/health',(req,res)=>res.json({status:'ok'}));
 app.get('/api/ready',(req,res)=>res.json({status:'ready',database:'connected'}));
-app.get('/api/setup/status',asyncRoute(async(req,res)=>res.json({required:!(await User.exists({role:'ADMIN'}))})));
-app.post('/api/setup/initialize',asyncRoute(async(req,res)=>{ const body=z.object({companyName:z.string().min(2),adminName:z.string().min(2),email:z.string().email(),password:z.string().min(12),officeStart:z.string().default('09:00')}).parse(req.body); if(await User.exists({role:'ADMIN'})) return res.status(409).json({error:'Setup already completed'}); const company=await Company.create({name:body.companyName,officeStart:body.officeStart}); const user=await User.create({name:body.adminName,email:body.email,passwordHash:await bcrypt.hash(body.password,12),role:'ADMIN'}); await Promise.all([LeaveType.create([{name:'Annual leave',code:'annual',quota:14},{name:'Sick leave',code:'sick',quota:8},{name:'Casual leave',code:'casual',quota:10},{name:'Unpaid leave',code:'unpaid',unpaid:true}]),Department.create({name:'General'}),Designation.create({name:'Employee',department:'General'})]); res.status(201).json({company:company.name,user:{email:user.email,role:user.role}}); }));
-app.post('/api/auth/login',asyncRoute(async(req,res)=>{ const b=z.object({email:z.string().email(),password:z.string()}).parse(req.body); const user=await User.findOne({email:b.email.toLowerCase()}); if(!user||!user.active||!await bcrypt.compare(b.password,user.passwordHash)) return res.status(401).json({error:'Email or password is incorrect'}); const token=jwt.sign({sub:user.id,ver:user.tokenVersion},env.JWT_SECRET,{expiresIn:env.JWT_EXPIRES_IN}); res.json({token,user:{id:user.id,name:user.name,email:user.email,role:user.role,mustChangePassword:user.mustChangePassword,employee:user.employee}}); }));
+app.get('/api/setup/status',(req,res)=>res.json({required:true,multipleCompanies:true}));
+app.post('/api/setup/initialize',companySignupLimit,asyncRoute(async(req,res)=>{
+  const body=z.object({companyName:z.string().trim().min(2).max(100),adminName:z.string().trim().min(2).max(100),email:z.string().email().transform(value=>value.toLowerCase()),password:z.string().min(12).max(200),officeStart:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default('09:00')}).parse(req.body);
+  if(await User.exists({email:body.email})) return res.status(409).json({error:'An account with this email already exists. Sign in with that account or use another email.'});
+  const company=await Company.create({name:body.companyName,officeStart:body.officeStart,tenantMigrationVersion:1});
+  try {
+    const user=await User.create({name:body.adminName,email:body.email,passwordHash:await bcrypt.hash(body.password,12),role:'ADMIN',company:company.id});
+    await Promise.all([
+      LeaveType.create([{name:'Annual leave',code:'annual',quota:14,company:company.id},{name:'Sick leave',code:'sick',quota:8,company:company.id},{name:'Casual leave',code:'casual',quota:10,company:company.id},{name:'Unpaid leave',code:'unpaid',unpaid:true,company:company.id}]),
+      Department.create({name:'General',company:company.id}),
+      Designation.create({name:'Employee',department:'General',company:company.id})
+    ]);
+    const token=jwt.sign({sub:user.id,ver:user.tokenVersion},env.JWT_SECRET,{expiresIn:env.JWT_EXPIRES_IN});
+    res.status(201).json({token,company:{id:company.id,name:company.name},user:{id:user.id,name:user.name,email:user.email,role:user.role,company:user.company}});
+  } catch(error) {
+    const scopedModels=[User,Employee,Attendance,AttendanceCorrection,LeaveType,LeaveRequest,Holiday,Department,Designation,SalaryStructure,LeaveBalance,PayrollRun,Payslip,Announcement,Notification,AuditLog,AiLog];
+    await Promise.all(scopedModels.map(item=>item.collection.deleteMany({company:company._id})));
+    await Company.deleteOne({_id:company._id});
+    throw error;
+  }
+}));
+app.post('/api/auth/login',asyncRoute(async(req,res)=>{ const b=z.object({email:z.string().email(),password:z.string()}).parse(req.body); const user=await User.findOne({email:b.email.toLowerCase()}); if(!user||!user.active||!await bcrypt.compare(b.password,user.passwordHash)) return res.status(401).json({error:'Email or password is incorrect'}); const token=jwt.sign({sub:user.id,ver:user.tokenVersion},env.JWT_SECRET,{expiresIn:env.JWT_EXPIRES_IN}); res.json({token,user:{id:user.id,name:user.name,email:user.email,role:user.role,mustChangePassword:user.mustChangePassword,employee:user.employee,company:user.company}}); }));
 app.use('/api',authenticate,passwordGate);
 app.post('/api/auth/logout',(req,res)=>{req.user.tokenVersion+=1; req.user.save().then(()=>res.json({success:true}));});
-app.get('/api/auth/me',asyncRoute(async(req,res)=>res.json({id:req.user.id,name:req.user.name,email:req.user.email,role:req.user.role,mustChangePassword:req.user.mustChangePassword,employee:req.user.employee})));
+app.get('/api/auth/me',asyncRoute(async(req,res)=>res.json({id:req.user.id,name:req.user.name,email:req.user.email,role:req.user.role,mustChangePassword:req.user.mustChangePassword,employee:req.user.employee,company:req.user.company})));
 app.post('/api/auth/change-password',asyncRoute(async(req,res)=>{const b=z.object({currentPassword:z.string(),newPassword:z.string().min(12)}).parse(req.body); if(!await bcrypt.compare(b.currentPassword,req.user.passwordHash)) return res.status(422).json({error:'Current password is incorrect'}); req.user.passwordHash=await bcrypt.hash(b.newPassword,12); req.user.mustChangePassword=false; req.user.tokenVersion+=1; await req.user.save(); res.json({success:true});}));
 app.get('/api/organization',asyncRoute(async(req,res)=>res.json(await Company.findOne().lean())));
 app.patch('/api/organization',roles('ADMIN'),asyncRoute(async(req,res)=>{const doc=await Company.findOne(); if(!doc)return res.status(404).json({error:'Company not configured'}); const before=doc.toObject(); Object.assign(doc,z.object({name:z.string().min(2).optional(),officeStart:z.string().optional(),graceMinutes:z.number().int().min(0).optional(),weekends:z.array(z.number().int().min(0).max(6)).optional(),latitude:z.number().optional(),longitude:z.number().optional(),radiusMeters:z.number().positive().optional()}).parse(req.body)); await doc.save(); await audit(req.user.id,'organization.updated','Company',doc.id,before,doc.toObject()); res.json(doc);}));
