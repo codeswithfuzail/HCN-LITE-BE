@@ -15,3 +15,12 @@ export function monthlyPayroll(basicSalary) {
   const tax = Math.round((annualTax(gross * 12) / 12) * 100) / 100;
   return { basic, hra, medical, gross, deductions: 0, tax, net: Math.round((gross - tax) * 100) / 100 };
 }
+
+export function calculatePayrollRow({ basicSalary, monthWorkingDays, employeeWorkingDays, absentDays = 0, unpaidLeaveDays = 0, halfDays = 0 }) {
+  const base=monthlyPayroll(basicSalary),ratio=monthWorkingDays>0?Math.min(1,employeeWorkingDays/monthWorkingDays):0;
+  const basic=Math.round(base.basic*ratio*100)/100,hra=Math.round(base.hra*ratio*100)/100,medical=Math.round(base.medical*ratio*100)/100;
+  const gross=Math.round((basic+hra+medical)*100)/100,dailySalary=monthWorkingDays?base.gross/monthWorkingDays:0;
+  const deductions=Math.round(dailySalary*(absentDays+unpaidLeaveDays+halfDays*.5)*100)/100;
+  const tax=Math.round((annualTax(gross*12)/12)*100)/100;
+  return {basic,hra,medical,gross,dailySalary:Math.round(dailySalary*100)/100,absentDays,unpaidLeaveDays,halfDays,deductions,tax,net:Math.round((gross-deductions-tax)*100)/100};
+}
