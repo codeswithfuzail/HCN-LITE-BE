@@ -18,6 +18,7 @@ const audit=(actor,action,type,id,before,after)=>AuditLog.create({actor,action,e
 function localDate(date,timeZone){const p=new Intl.DateTimeFormat('en-GB',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date);const v=Object.fromEntries(p.map(x=>[x.type,x.value]));return `${v.year}-${v.month}-${v.day}`;}
 function isLate(date,officeStart,graceMinutes,timeZone){const p=new Intl.DateTimeFormat('en-GB',{timeZone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date),v=Object.fromEntries(p.map(x=>[x.type,x.value]));const [hour,minute]=officeStart.split(':').map(Number);return Number(v.hour)*60+Number(v.minute)>hour*60+minute+graceMinutes;}
 function workingDateKeys(from,to,company,holidaySet=new Set()){const result=[];for(let d=new Date(`${from}T00:00:00Z`),end=new Date(`${to}T00:00:00Z`);d<=end;d.setUTCDate(d.getUTCDate()+1)){const key=d.toISOString().slice(0,10);if(!company.weekends.includes(d.getUTCDay())&&!holidaySet.has(key))result.push(key);}return result;}
+app.get('/',(req,res)=>res.json({status:true,database:'connected',message:'MongoDB connected successfully. HCM Lite backend is running.'}));
 app.get('/api/health',(req,res)=>res.json({status:'ok'}));
 app.get('/api/ready',(req,res)=>res.json({status:'ready',database:'connected'}));
 app.get('/api/setup/status',asyncRoute(async(req,res)=>res.json({required:!(await User.exists({role:'ADMIN'}))})));
